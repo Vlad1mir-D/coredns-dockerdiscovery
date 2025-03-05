@@ -25,7 +25,8 @@ type ContainerInfo struct {
 type ContainerInfoMap map[string]*ContainerInfo
 
 type ContainerDomainResolver interface {
-	// return domains without trailing dot
+	// Return domains in any format - they will be normalized
+	// to canonical FQDN format (lowercase with trailing dot)
 	resolve(container *dockerapi.Container) ([]string, error)
 }
 
@@ -41,6 +42,18 @@ type DockerDiscovery struct {
 	ttl              uint32
 }
 
+// normalizeDomain ensures consistent domain representation by:
+// 1. Converting to lowercase (DNS is case-insensitive)
+// 2. Ensuring proper FQDN format with trailing dot
+func normalizeDomain(domain string) string {
+	// Convert to lowercase for case-insensitive comparison
+	domain = strings.ToLower(domain)
+
+	// Ensure domain ends with exactly one trailing dot
+	domain = strings.TrimSuffix(domain, ".")
+	return domain + "."
+}
+
 // NewDockerDiscovery constructs a new DockerDiscovery object
 func NewDockerDiscovery(dockerEndpoint string) *DockerDiscovery {
 	return &DockerDiscovery{
@@ -53,11 +66,15 @@ func NewDockerDiscovery(dockerEndpoint string) *DockerDiscovery {
 func (dd *DockerDiscovery) resolveDomainsByContainer(container *dockerapi.Container) ([]string, error) {
 	var domains []string
 	for _, resolver := range dd.resolvers {
-		var d, err = resolver.resolve(container)
+		d, err := resolver.resolve(container)
 		if err != nil {
 			log.Printf("[docker] Error resolving container domains %s", err)
 		}
-		domains = append(domains, d...)
+
+		// Normalize each domain from resolver
+		for _, domain := range d {
+			domains = append(domains, normalizeDomain(domain))
+		}
 	}
 
 	return domains, nil
@@ -67,9 +84,13 @@ func (dd *DockerDiscovery) containerInfoByDomain(requestName string) (*Container
 	dd.mutex.RLock()
 	defer dd.mutex.RUnlock()
 
+	// Normalize the request name
+	normalizedRequest := normalizeDomain(requestName)
+
 	for _, containerInfo := range dd.containerInfoMap {
 		for _, d := range containerInfo.domains {
-			if fmt.Sprintf("%s.", d) == requestName { // qualified domain name must be specified with a trailing dot
+			normalizedDomain := normalizeDomain(d)
+			if normalizedRequest == normalizedDomain {
 				return containerInfo, nil
 			}
 		}
@@ -93,14 +114,12 @@ func (dd *DockerDiscovery) ServeDNS(ctx context.Context, w dns.ResponseWriter, r
 		if containerInfo != nil && containerInfo.address6 != nil {
 			answers = getAnswer(state.Name(), []net.IP{containerInfo.address6}, dd.ttl, true)
 		} else if containerInfo != nil && containerInfo.address != nil {
-			// in acordance with https://tools.ietf.org/html/rfc6147#section-5.1.2 we should return an empty answer section if no AAAA records are available and a A record is available when the client requested AAAA
+			// in acordance with https://datatracker.ietf.org/doc/html/rfc4074#section-3 we should return an empty answer section if no AAAA records are available and a A record is available when the client requested AAAA
 			record := new(dns.AAAA)
 			record.Hdr = dns.RR_Header{
-				Name:   state.Name(),
-				Rrtype: dns.TypeAAAA,
-				Class:  dns.ClassINET,
-				Ttl:    dd.ttl,
-				Rdlength: 0,
+				Name:  state.Name(),
+				Class: dns.ClassINET,
+				Ttl:   dd.ttl,
 			}
 			answers = append(answers, record)
 		}
@@ -220,7 +239,7 @@ func (dd *DockerDiscovery) updateContainerInfo(container *dockerapi.Container) e
 		}
 
 		if !isExist {
-			log.Printf("[docker] Add entry of container %s (%s). IP: %v", normalizeContainerName(container), container.ID[:12], containerAddress)
+			log.Printf("[docker] Add entry of container %s (%s). IP: %v, FQN: %s", normalizeContainerName(container), container.ID[:12], containerAddress, domains)
 		}
 	} else if isExist {
 		log.Printf("[docker] Remove container entry %s (%s)", normalizeContainerName(container), container.ID[:12])

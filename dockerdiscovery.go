@@ -116,18 +116,31 @@ func (dd *DockerDiscovery) ServeDNS(ctx context.Context, w dns.ResponseWriter, r
 		if containerInfo != nil && containerInfo.address6 != nil {
 			answers = getAnswer(state.Name(), []net.IP{containerInfo.address6}, dd.ttl, true)
 		} else if containerInfo != nil && containerInfo.address != nil {
-			// in acordance with https://datatracker.ietf.org/doc/html/rfc4074#section-3 we should return an empty answer section if no AAAA records are available and a A record is available when the client requested AAAA
-			record := new(dns.AAAA)
-			record.Hdr = dns.RR_Header{
-				Name:  state.Name(),
-				Class: dns.ClassINET,
-				Ttl:   dd.ttl,
-			}
-			answers = append(answers, record)
+			// In accordance with RFC 4074 section 3, when only A record exists but AAAA is requested,
+			// we should return an empty answer section (NOERROR with 0 answers)
+			answers = []dns.RR{} // This creates an empty answer section
 		}
 	}
 
 	if len(answers) == 0 {
+		// Check if it's an AAAA query for a domain that exists with only an A record
+		if state.QType() == dns.TypeAAAA {
+			containerInfo, _ := dd.containerInfoByDomain(state.QName())
+			if containerInfo != nil && containerInfo.address != nil {
+				// Domain exists with A record but no AAAA - return NOERROR with empty answer
+				m := new(dns.Msg)
+				m.SetReply(r)
+				m.Authoritative, m.RecursionAvailable, m.Compress = true, false, true
+
+				state.SizeAndDo(m)
+				m = state.Scrub(m)
+				err := w.WriteMsg(m)
+				if err != nil {
+					log.Errorf("Error: %s", err.Error())
+				}
+				return dns.RcodeSuccess, nil
+			}
+		}
 		return plugin.NextOrFailure(dd.Name(), dd.Next, ctx, w, r)
 	}
 
@@ -200,7 +213,7 @@ func (dd *DockerDiscovery) getContainerAddress(container *dockerapi.Container, v
 	// If a specific network is specified via label, use that one
 	if hasNetName {
 		log.Debugf("network name %s specified (%s)", netName, container.ID[:12])
-		
+
 		if network, ok := container.NetworkSettings.Networks[netName]; ok {
 			if !v6 {
 				return net.ParseIP(network.IPAddress), nil
@@ -210,7 +223,7 @@ func (dd *DockerDiscovery) getContainerAddress(container *dockerapi.Container, v
 			// If we're looking for IPv6 but none exists, return nil
 			return nil, nil
 		}
-		
+
 		return nil, fmt.Errorf("specified network %s not found for container %s", netName, container.ID[:12])
 	}
 
@@ -256,7 +269,7 @@ func (dd *DockerDiscovery) getContainerAddress(container *dockerapi.Container, v
 func (dd *DockerDiscovery) debugContainerNetworks(container *dockerapi.Container, requestedNetwork string) {
 	log.Debugf("Container %s (%s) networks:", normalizeContainerName(container), container.ID[:12])
 	for netName, network := range container.NetworkSettings.Networks {
-		log.Debugf("  - Network: %s, IP: %s, IPv6: %s", 
+		log.Debugf("  - Network: %s, IP: %s, IPv6: %s",
 			netName, network.IPAddress, network.GlobalIPv6Address)
 	}
 	log.Debugf("Requested network: %s", requestedNetwork)

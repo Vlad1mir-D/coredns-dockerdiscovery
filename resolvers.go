@@ -3,7 +3,7 @@ package dockerdiscovery
 import (
 	"fmt"
 	dockerapi "github.com/fsouza/go-dockerclient"
-	"log"
+	golog "log"
 	"strings"
 )
 
@@ -67,7 +67,7 @@ func (resolver ComposeResolver) resolve(container *dockerapi.Container) ([]strin
 	domain := fmt.Sprintf("%s.%s.%s", service, project, resolver.domain)
 	domains = append(domains, domain)
 
-	log.Printf("[docker] Found compose domain for container %s: %s", container.ID[:12], domain)
+	golog.Printf("[docker] Found compose domain for container %s: %s", container.ID[:12], domain)
 	return domains, nil
 }
 

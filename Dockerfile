@@ -15,7 +15,7 @@ COPY --link . coredns-dockerdiscovery
 
 # Combine configuration and build steps
 WORKDIR /go/coredns
-RUN cp ../coredns-dockerdiscovery/docker/plugin.cfg . && \
+RUN cp ../coredns-dockerdiscovery/plugin.cfg . && \
     go mod edit -replace github.com/kevinjqiu/coredns-dockerdiscovery=../coredns-dockerdiscovery && \
     go generate coredns.go && \
     go build -mod=mod -o=coredns && \
